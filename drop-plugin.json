@@ -1,0 +1,18 @@
+{
+  "id": "drop-metadata-pcgamingwiki",
+  "name": "PCGamingWiki",
+  "version": "0.1.0",
+  "description": "PCGamingWiki metadata and fix-list provider plugin for Drop (#310).",
+  "author": "Heretek Games",
+  "apiVersion": 2,
+  "trust": "trusted",
+  "storageVersion": 1,
+  "capabilities": [
+    "metadata:provider",
+    "network"
+  ],
+  "targets": [
+    "server"
+  ],
+  "entry": "dist/src/index.js"
+}
