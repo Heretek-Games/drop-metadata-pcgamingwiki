@@ -2,10 +2,12 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { MockPluginContext } from "@droposs/plugin-sdk";
 import Plugin, {
+  PCGamingWikiProvider,
   compileTags,
   parseFirstYear,
   parseIdFromHref,
   parseWikiStringArray,
+  type HttpFetch,
 } from "../src/index.js";
 
 test("drop-metadata-pcgamingwiki registers a metadata provider", async () => {
@@ -59,4 +61,113 @@ test("compileTags flattens the wiki tag columns", () => {
     Pacing: null,
   });
   assert.deepEqual(tags, ["Action", "FPS", "Sci-fi"]);
+});
+
+function stubWiki() {
+  const calls: Array<{ url: string; init?: RequestInit }> = [];
+  const row = {
+    PageID: "42",
+    PageName: "Test Game",
+    "Cover URL": null,
+    Released: "2001-01-01",
+    Developers: null,
+    Publishers: null,
+    Genres: null,
+    Themes: null,
+    Modes: null,
+    Perspectives: null,
+    "Art styles": null,
+    Pacing: null,
+  };
+  const fetchFn: HttpFetch = async (url, init) => {
+    calls.push({ url: String(url), init });
+    const parsed = new URL(String(url));
+    const action = parsed.searchParams.get("action");
+    if (action === "query" && parsed.searchParams.get("meta") === "tokens") {
+      return new Response(
+        JSON.stringify({ query: { tokens: { logintoken: "login-token" } } }),
+        {
+          status: 200,
+          headers: { "set-cookie": "wiki_session=abc; Path=/; HttpOnly" },
+        },
+      );
+    }
+    if (init?.method === "POST" && String(init.body).includes("action=login")) {
+      return new Response(JSON.stringify({ login: { result: "Success" } }), {
+        status: 200,
+      });
+    }
+    if (action === "cargoquery") {
+      return new Response(JSON.stringify({ cargoquery: [{ title: row }] }), {
+        status: 200,
+      });
+    }
+    if (action === "parse") {
+      return new Response(
+        JSON.stringify({
+          parse: { text: { "*": '<div class="introduction"><p>Intro</p></div>' } },
+        }),
+        { status: 200 },
+      );
+    }
+    return new Response("{}", { status: 200 });
+  };
+  return { calls, fetchFn };
+}
+
+test("search queries the renamed Game table and logs in when configured", async () => {
+  const { calls, fetchFn } = stubWiki();
+  const provider = new PCGamingWikiProvider(fetchFn, {
+    username: "User@Bot",
+    password: "secret",
+  });
+
+  const results = await provider.search("Test Game");
+  assert.equal(results.length, 1);
+  assert.equal(results[0].id, "42");
+  assert.equal(results[0].title, "Test Game");
+
+  const cargoQueryIndex = calls.findIndex((call) =>
+    call.url.includes("action=cargoquery"),
+  );
+  assert.ok(cargoQueryIndex >= 0, "expected a cargoquery request");
+  assert.equal(
+    new URL(calls[cargoQueryIndex].url).searchParams.get("tables"),
+    "Game",
+  );
+
+  const loginIndex = calls.findIndex(
+    (call) =>
+      call.init?.method === "POST" &&
+      String(call.init.body).includes("action=login"),
+  );
+  assert.ok(loginIndex >= 0, "expected a login POST");
+  assert.match(String(calls[loginIndex].init?.body), /lgname=User%40Bot/);
+
+  const tokenIndex = calls.findIndex((call) => call.url.includes("meta=tokens"));
+  assert.ok(tokenIndex < loginIndex && loginIndex < cargoQueryIndex);
+});
+
+test("search does not log in when no credentials are configured", async () => {
+  const { calls, fetchFn } = stubWiki();
+  const provider = new PCGamingWikiProvider(fetchFn);
+  await provider.search("Test Game");
+  assert.equal(
+    calls.filter((call) => call.init?.method === "POST").length,
+    0,
+    "no login POST without credentials",
+  );
+});
+
+test("getDetails reads the Game table by page id", async () => {
+  const { calls, fetchFn } = stubWiki();
+  const provider = new PCGamingWikiProvider(fetchFn);
+  const details = await provider.getDetails("42");
+  assert.ok(details);
+  assert.equal(details.id, "42");
+  assert.equal(details.description, "Intro");
+
+  const cargo = calls.find((call) => call.url.includes("action=cargoquery"));
+  assert.ok(cargo);
+  assert.equal(new URL(cargo.url).searchParams.get("tables"), "Game");
 });

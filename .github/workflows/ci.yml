@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      # The plugin pins `@droposs/plugin-sdk` to the sibling checkout via a
+      # `file:` dependency, so both repositories must be present side by side.
+      - name: Checkout plugin
+        uses: actions/checkout@v4
+        with:
+          path: drop-metadata-pcgamingwiki
+      - name: Checkout plugin SDK
+        uses: actions/checkout@v4
+        with:
+          repository: Heretek-Games/drop-plugin-sdk
+          path: drop-plugin-sdk
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: drop-metadata-pcgamingwiki/package-lock.json
+
+      - name: Build @droposs/plugin-sdk
+        working-directory: drop-plugin-sdk
+        run: |
+          corepack enable
+          pnpm install --frozen-lockfile
+          pnpm -r run build
+
+      - name: Verify plugin
+        working-directory: drop-metadata-pcgamingwiki
+        run: |
+          npm ci --ignore-scripts
+          npm run typecheck
+          npm run build
+          npm test

@@ -7,6 +7,7 @@
   "scripts": {
     "build": "rm -rf dist && tsc",
     "test": "node --test dist/test/*.js",
+    "typecheck": "tsc --noEmit",
     "sign": "drop-plugin sign ."
   },
   "dependencies": {
