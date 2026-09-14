@@ -10,12 +10,15 @@
     "sign": "drop-plugin sign ."
   },
   "dependencies": {
-    "@droposs/plugin-sdk": "file:../drop-plugin-sdk/packages/plugin-sdk"
+    "@droposs/plugin-sdk": "file:../drop-plugin-sdk/packages/plugin-sdk",
+    "cheerio": "^1.0.0",
+    "luxon": "^3.5.0"
   },
   "devDependencies": {
     "@droposs/plugin-cli": "file:../drop-plugin-sdk/packages/plugin-cli",
     "typescript": "^5.7.0",
-    "@types/node": "^22.0.0"
+    "@types/node": "^22.0.0",
+    "@types/luxon": "^3.4.2"
   },
   "license": "MIT"
 }
