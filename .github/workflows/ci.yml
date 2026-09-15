@@ -12,11 +12,11 @@ jobs:
       # The plugin pins `@droposs/plugin-sdk` to the sibling checkout via a
       # `file:` dependency, so both repositories must be present side by side.
       - name: Checkout plugin
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7.0.1
         with:
           path: drop-metadata-pcgamingwiki
       - name: Checkout plugin SDK
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # actions/checkout@v4
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # actions/checkout@v7.0.1
         with:
           repository: Heretek-Games/drop-plugin-sdk
           path: drop-plugin-sdk
