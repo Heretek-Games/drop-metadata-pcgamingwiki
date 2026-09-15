@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { MockPluginContext } from "@droposs/plugin-sdk";
 import Plugin, {
+  DEFAULT_USER_AGENT,
   PCGamingWikiProvider,
   compileTags,
   parseFirstYear,
@@ -170,4 +171,97 @@ test("getDetails reads the Game table by page id", async () => {
   const cargo = calls.find((call) => call.url.includes("action=cargoquery"));
   assert.ok(cargo);
   assert.equal(new URL(cargo.url).searchParams.get("tables"), "Game");
+});
+
+async function withUserAgentEnv<T>(
+  value: string | undefined,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const previous = process.env.PCG_USER_AGENT;
+  if (value === undefined) {
+    delete process.env.PCG_USER_AGENT;
+  } else {
+    process.env.PCG_USER_AGENT = value;
+  }
+  try {
+    return await fn();
+  } finally {
+    if (previous === undefined) {
+      delete process.env.PCG_USER_AGENT;
+    } else {
+      process.env.PCG_USER_AGENT = previous;
+    }
+  }
+}
+
+function requestHeader(
+  call: { init?: RequestInit },
+  name: string,
+): string | undefined {
+  return (call.init?.headers as Record<string, string> | undefined)?.[name];
+}
+
+test("sends the default User-Agent on every API request", async () => {
+  await withUserAgentEnv(undefined, async () => {
+    const { calls, fetchFn } = stubWiki();
+    const provider = new PCGamingWikiProvider(fetchFn, {
+      username: "User@Bot",
+      password: "secret",
+    });
+    await provider.search("Test Game");
+    assert.ok(
+      calls.length >= 4,
+      "expected login token, login, cargoquery, and parse requests",
+    );
+    for (const call of calls) {
+      assert.equal(
+        requestHeader(call, "user-agent"),
+        DEFAULT_USER_AGENT,
+        `missing User-Agent on ${call.url}`,
+      );
+    }
+  });
+});
+
+test("PCG_USER_AGENT overrides the User-Agent", async () => {
+  const override = "custom-agent/9.9 (contact@example.com)";
+  await withUserAgentEnv(override, async () => {
+    const { calls, fetchFn } = stubWiki();
+    await new PCGamingWikiProvider(fetchFn).search("Test Game");
+    assert.ok(calls.length > 0);
+    for (const call of calls) {
+      assert.equal(requestHeader(call, "user-agent"), override);
+    }
+  });
+});
+
+test("search escapes quotes, backslashes, and entities in the where clause", async () => {
+  const { calls, fetchFn } = stubWiki();
+  const provider = new PCGamingWikiProvider(fetchFn);
+  await provider.search('Elden "Ring" & Co\\Ltd');
+
+  const cargo = calls.find((call) => call.url.includes("action=cargoquery"));
+  assert.ok(cargo);
+  const where = new URL(cargo.url).searchParams.get("where");
+  assert.equal(where, 'Game._pageName="Elden \\"Ring\\" &amp; Co\\\\Ltd"');
+
+  const unescaped = where?.replace(/\\"/g, "") ?? "";
+  assert.equal(
+    unescaped.match(/"/g)?.length,
+    2,
+    "only the two delimiters may remain unescaped",
+  );
+});
+
+test("getDetails escapes quotes in the page-id where clause", async () => {
+  const { calls, fetchFn } = stubWiki();
+  const provider = new PCGamingWikiProvider(fetchFn);
+  await provider.getDetails('42" OR "1"="1');
+
+  const cargo = calls.find((call) => call.url.includes("action=cargoquery"));
+  assert.ok(cargo);
+  assert.equal(
+    new URL(cargo.url).searchParams.get("where"),
+    'Game._pageID="42\\" OR \\"1\\"=\\"1"',
+  );
 });

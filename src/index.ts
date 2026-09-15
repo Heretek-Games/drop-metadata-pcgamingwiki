@@ -15,6 +15,22 @@ export type HttpFetch = (
 
 const API_BASE = "https://www.pcgamingwiki.com/w/api.php";
 
+export const DEFAULT_USER_AGENT =
+  "drop-metadata-pcgamingwiki/0.1.0 (+https://github.com/Heretek-Games/drop-metadata-pcgamingwiki)";
+
+/**
+ * Escapes a value embedded in a double-quoted Cargo `where` literal.
+ *
+ * URL encoding is handled by `URLSearchParams`; this guards the Cargo query
+ * syntax itself so quotes, backslashes, and entities in user input cannot break
+ * out of the literal. Cargo accepts `\"`/`\\` escapes and
+ * `CargoSQLQuery::newFromValues` HTML-decodes the clause before parsing, so `&`
+ * is escaped last to keep entity sequences such as `&quot;` literal.
+ */
+export function escapeCargoString(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/&/g, "&amp;");
+}
+
 interface PCGamingWikiParseRawPage {
   parse?: {
     text?: { "*"?: string };
@@ -121,10 +137,20 @@ export class PCGamingWikiProvider implements MetadataProvider {
   constructor(
     private readonly fetchFn: HttpFetch,
     private readonly credentials?: PCGamingWikiCredentials,
+    private readonly userAgent: string = process.env.PCG_USER_AGENT?.trim() ||
+      DEFAULT_USER_AGENT,
   ) {}
 
   private cookieHeader(): Record<string, string> {
     return this.cookie ? { cookie: this.cookie } : {};
+  }
+
+  private headers(extra: Record<string, string> = {}): Record<string, string> {
+    return {
+      "user-agent": this.userAgent,
+      ...this.cookieHeader(),
+      ...extra,
+    };
   }
 
   private captureCookies(response: Response): void {
@@ -148,7 +174,7 @@ export class PCGamingWikiProvider implements MetadataProvider {
 
   private async get<T>(params: URLSearchParams): Promise<T> {
     const response = await this.fetchFn(`${API_BASE}?${params.toString()}`, {
-      headers: this.cookieHeader(),
+      headers: this.headers(),
     });
     this.captureCookies(response);
     if (!response.ok) {
@@ -189,10 +215,9 @@ export class PCGamingWikiProvider implements MetadataProvider {
 
     const response = await this.fetchFn(API_BASE, {
       method: "POST",
-      headers: {
+      headers: this.headers({
         "content-type": "application/x-www-form-urlencoded",
-        ...this.cookieHeader(),
-      },
+      }),
       body: new URLSearchParams({
         action: "login",
         lgname: credentials.username,
@@ -257,7 +282,7 @@ export class PCGamingWikiProvider implements MetadataProvider {
       tables: "Game",
       fields:
         "Game._pageID=PageID,Game._pageName=PageName,Game.Cover_URL,Game.Released",
-      where: `Game._pageName="${query}"`,
+      where: `Game._pageName="${escapeCargoString(query)}"`,
       format: "json",
     });
 
@@ -283,7 +308,7 @@ export class PCGamingWikiProvider implements MetadataProvider {
       tables: "Game",
       fields:
         "Game._pageID=PageID,Game._pageName=PageName,Game.Cover_URL,Game.Developers,Game.Released,Game.Genres,Game.Publishers,Game.Themes,Game.Modes,Game.Perspectives,Game.Art_styles,Game.Pacing",
-      where: `Game._pageID="${id}"`,
+      where: `Game._pageID="${escapeCargoString(id)}"`,
       format: "json",
     });
 
