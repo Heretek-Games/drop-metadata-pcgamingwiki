@@ -15,6 +15,22 @@ export type HttpFetch = (
 
 const API_BASE = "https://www.pcgamingwiki.com/w/api.php";
 
+export const DEFAULT_USER_AGENT =
+  "drop-metadata-pcgamingwiki/0.1.0 (+https://github.com/Heretek-Games/drop-metadata-pcgamingwiki)";
+
+/**
+ * Escapes a value embedded in a double-quoted Cargo `where` literal.
+ *
+ * URL encoding is handled by `URLSearchParams`; this guards the Cargo query
+ * syntax itself so quotes, backslashes, and entities in user input cannot break
+ * out of the literal. Cargo accepts `\"`/`\\` escapes and
+ * `CargoSQLQuery::newFromValues` HTML-decodes the clause before parsing, so `&`
+ * is escaped last to keep entity sequences such as `&quot;` literal.
+ */
+export function escapeCargoString(value: string): string {
+  return value.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/&/g, "&amp;");
+}
+
 interface PCGamingWikiParseRawPage {
   parse?: {
     text?: { "*"?: string };
@@ -106,18 +122,130 @@ export function compileTags(game: PCGamingWikiGame): string[] {
   return tags;
 }
 
+/** Bot-password credentials (`User@BotName` + bot password). */
+export interface PCGamingWikiCredentials {
+  username: string;
+  password: string;
+}
+
 export class PCGamingWikiProvider implements MetadataProvider {
   id = "pcgamingwiki";
   name = "PCGamingWiki";
+  private cookie?: string;
+  private login?: Promise<void>;
 
-  constructor(private readonly fetchFn: HttpFetch) {}
+  constructor(
+    private readonly fetchFn: HttpFetch,
+    private readonly credentials?: PCGamingWikiCredentials,
+    private readonly userAgent: string = process.env.PCG_USER_AGENT?.trim() ||
+      DEFAULT_USER_AGENT,
+  ) {}
 
-  private async request<T>(params: URLSearchParams): Promise<T> {
-    const response = await this.fetchFn(`${API_BASE}?${params.toString()}`);
+  private cookieHeader(): Record<string, string> {
+    return this.cookie ? { cookie: this.cookie } : {};
+  }
+
+  private headers(extra: Record<string, string> = {}): Record<string, string> {
+    return {
+      "user-agent": this.userAgent,
+      ...this.cookieHeader(),
+      ...extra,
+    };
+  }
+
+  private captureCookies(response: Response): void {
+    const headers = response.headers as Headers & {
+      getSetCookie?: () => string[];
+    };
+    const raw =
+      typeof headers.getSetCookie === "function"
+        ? headers.getSetCookie()
+        : [headers.get("set-cookie") ?? ""].filter(Boolean);
+    const jar = new Map<string, string>();
+    for (const line of [...(this.cookie?.split("; ") ?? []), ...raw]) {
+      const pair = line.split(";")[0]?.trim();
+      if (!pair) continue;
+      const separator = pair.indexOf("=");
+      if (separator <= 0) continue;
+      jar.set(pair.slice(0, separator), pair.slice(separator + 1));
+    }
+    this.cookie = [...jar.entries()].map(([key, value]) => `${key}=${value}`).join("; ");
+  }
+
+  private async get<T>(params: URLSearchParams): Promise<T> {
+    const response = await this.fetchFn(`${API_BASE}?${params.toString()}`, {
+      headers: this.headers(),
+    });
+    this.captureCookies(response);
     if (!response.ok) {
       throw new Error(`PCGamingWiki request failed: ${response.status}`);
     }
     return (await response.json()) as T;
+  }
+
+  /** Log in with the configured bot password (required by `cargoquery`). */
+  private async ensureLoggedIn(): Promise<void> {
+    if (!this.credentials) return;
+    if (!this.login) {
+      this.login = this.loginInternal().catch((error) => {
+        this.login = undefined;
+        throw error;
+      });
+    }
+    return this.login;
+  }
+
+  private async loginInternal(): Promise<void> {
+    const credentials = this.credentials;
+    if (!credentials) return;
+    const tokenData = await this.get<{
+      query?: { tokens?: { logintoken?: string } };
+    }>(
+      new URLSearchParams({
+        action: "query",
+        meta: "tokens",
+        type: "login",
+        format: "json",
+      }),
+    );
+    const logintoken = tokenData.query?.tokens?.logintoken;
+    if (!logintoken) {
+      throw new Error("PCGamingWiki login token missing");
+    }
+
+    const response = await this.fetchFn(API_BASE, {
+      method: "POST",
+      headers: this.headers({
+        "content-type": "application/x-www-form-urlencoded",
+      }),
+      body: new URLSearchParams({
+        action: "login",
+        lgname: credentials.username,
+        lgpassword: credentials.password,
+        lgtoken: logintoken,
+        format: "json",
+      }),
+    });
+    this.captureCookies(response);
+    if (!response.ok) {
+      throw new Error(`PCGamingWiki login failed: ${response.status}`);
+    }
+    const result = (await response.json()) as {
+      login?: { result?: string };
+    };
+    if (result.login?.result !== "Success") {
+      throw new Error(
+        `PCGamingWiki login failed: ${result.login?.result ?? "unknown"}`,
+      );
+    }
+  }
+
+  private async request<T>(params: URLSearchParams): Promise<T> {
+    // Since 2026-08-23 the wiki requires a bot-password session for cargoquery.
+    if (params.get("action") === "cargoquery") {
+      await this.ensureLoggedIn();
+    }
+    return this.get<T>(params);
   }
 
   private async cargoQuery<T>(params: URLSearchParams): Promise<T[]> {
@@ -151,10 +279,10 @@ export class PCGamingWikiProvider implements MetadataProvider {
   async search(query: string): Promise<MetadataSearchResult[]> {
     const params = new URLSearchParams({
       action: "cargoquery",
-      tables: "Infobox_game",
+      tables: "Game",
       fields:
-        "Infobox_game._pageID=PageID,Infobox_game._pageName=PageName,Infobox_game.Cover_URL,Infobox_game.Released",
-      where: `Infobox_game._pageName="${query}"`,
+        "Game._pageID=PageID,Game._pageName=PageName,Game.Cover_URL,Game.Released",
+      where: `Game._pageName="${escapeCargoString(query)}"`,
       format: "json",
     });
 
@@ -177,10 +305,10 @@ export class PCGamingWikiProvider implements MetadataProvider {
   async getDetails(id: string): Promise<MetadataDetails | null> {
     const params = new URLSearchParams({
       action: "cargoquery",
-      tables: "Infobox_game",
+      tables: "Game",
       fields:
-        "Infobox_game._pageID=PageID,Infobox_game._pageName=PageName,Infobox_game.Cover_URL,Infobox_game.Developers,Infobox_game.Released,Infobox_game.Genres,Infobox_game.Publishers,Infobox_game.Themes,Infobox_game.Modes,Infobox_game.Perspectives,Infobox_game.Art_styles,Infobox_game.Pacing",
-      where: `Infobox_game._pageID="${id}"`,
+        "Game._pageID=PageID,Game._pageName=PageName,Game.Cover_URL,Game.Developers,Game.Released,Game.Genres,Game.Publishers,Game.Themes,Game.Modes,Game.Perspectives,Game.Art_styles,Game.Pacing",
+      where: `Game._pageID="${escapeCargoString(id)}"`,
       format: "json",
     });
 
@@ -219,9 +347,20 @@ export default class PCGamingWikiPlugin implements ServerPlugin {
   };
 
   async init(ctx: PluginContext): Promise<void> {
+    const username = process.env.PCGAMINGWIKI_BOT_USERNAME;
+    const password = process.env.PCGAMINGWIKI_BOT_PASSWORD;
+    const credentials =
+      username && password ? { username, password } : undefined;
     ctx.registerMetadataProvider(
-      new PCGamingWikiProvider(ctx.fetch.bind(ctx)),
+      new PCGamingWikiProvider(ctx.fetch.bind(ctx), credentials),
     );
+    if (!credentials) {
+      ctx.logger.warn(
+        "PCGamingWiki bot credentials are not configured " +
+          "(set PCGAMINGWIKI_BOT_USERNAME/PCGAMINGWIKI_BOT_PASSWORD); " +
+          "cargoquery searches will be rejected by the wiki",
+      );
+    }
     ctx.logger.info("PCGamingWiki metadata provider registered");
   }
 }
