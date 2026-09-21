@@ -17,7 +17,7 @@
     "luxon": "^3.5.0"
   },
   "devDependencies": {
-    "@droposs/plugin-cli": "^0.6.1",
+    "@droposs/plugin-cli": "^0.7.0",
     "typescript": "^5.7.0",
     "@types/node": "^22.0.0",
     "@types/luxon": "^3.4.2",
